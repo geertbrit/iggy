@@ -12,7 +12,7 @@ use tracing_subscriber::FmtSubscriber;
 
 use iggy::prelude::*;
 
-const STREAM_NAME: &str = "minimal-bench";
+const DEFAULT_STREAM_NAME: &str = "minimal-bench";
 const TOPIC_NAME: &str = "test";
 
 #[derive(Parser, Debug, Clone)]
@@ -54,6 +54,10 @@ struct Args {
     /// Producer only mode - no consumers
     #[arg(long)]
     producer_only: bool,
+
+    /// Stream name (for multi-stream testing)
+    #[arg(long, default_value = DEFAULT_stream_name)]
+    stream: String,
 }
 
 /// Compute which partitions a producer writes to.
@@ -116,12 +120,13 @@ async fn main() -> Result<()> {
     info!("");
 
     // Setup stream
+    let stream_name = Arc::new(args.stream.clone());
     let setup_client = create_client(&args.server).await?;
-    let stream_id: Identifier = STREAM_NAME.try_into()?;
+    let stream_id: Identifier = stream_name.as_str().try_into()?;
     let topic_id: Identifier = TOPIC_NAME.try_into()?;
 
     let _ = setup_client.delete_stream(&stream_id).await;
-    setup_client.create_stream(STREAM_NAME).await?;
+    setup_client.create_stream(&stream_name).await?;
     setup_client.create_topic(&stream_id, TOPIC_NAME, args.partitions, CompressionAlgorithm::None, None, IggyExpiry::NeverExpire, MaxTopicSize::Unlimited).await?;
 
     if !args.producer_only {
@@ -144,7 +149,7 @@ async fn main() -> Result<()> {
     if !args.producer_only {
         for consumer_id in 0..args.consumers {
             let client = create_client(&args.server).await?;
-            let stream_id: Identifier = STREAM_NAME.try_into()?;
+            let stream_id: Identifier = stream_name.as_str().try_into()?;
             let topic_id: Identifier = TOPIC_NAME.try_into()?;
             let group_id: Identifier = "bench-group".try_into()?;
 
@@ -154,6 +159,7 @@ async fn main() -> Result<()> {
             let total_received = total_received.clone();
             let latency_hist = latency_hist.clone();
             let batch_size = args.batch_size;
+            let stream_name = stream_name.clone();
 
             consumer_handles.push(tokio::spawn(async move {
                 let consumer = Consumer::group(group_id);
@@ -209,6 +215,7 @@ async fn main() -> Result<()> {
         let message_size = args.message_size;
         let rate_start = rate_start.clone();
         let producer_latency_hist = producer_latency_hist.clone();
+        let stream_name = stream_name.clone();
 
         producer_handles.push(tokio::spawn(async move {
             let payload_template: Vec<u8> = vec![0u8; message_size];
@@ -222,7 +229,8 @@ async fn main() -> Result<()> {
                 let producer_latency_hist = producer_latency_hist.clone();
                 let payload_template = payload_template.clone();
                 let rate_start = rate_start.clone();
-                let stream_id: Identifier = STREAM_NAME.try_into().unwrap();
+                let stream_name = stream_name.clone();
+                let stream_id: Identifier = stream_name.as_str().try_into().unwrap();
                 let topic_id: Identifier = TOPIC_NAME.try_into().unwrap();
 
                 partition_handles.push(tokio::spawn(async move {

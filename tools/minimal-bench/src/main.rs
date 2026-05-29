@@ -56,7 +56,7 @@ struct Args {
     producer_only: bool,
 
     /// Stream name (for multi-stream testing)
-    #[arg(long, default_value = DEFAULT_stream_name)]
+    #[arg(long, default_value = DEFAULT_STREAM_NAME)]
     stream: String,
 }
 
@@ -164,6 +164,8 @@ async fn main() -> Result<()> {
             consumer_handles.push(tokio::spawn(async move {
                 let consumer = Consumer::group(group_id);
                 let mut empty_polls = 0;
+                // Thread-local histogram to avoid lock contention
+                let mut local_hist = Histogram::<u64>::new(3).unwrap();
 
                 while !producer_done.load(Ordering::Relaxed) || empty_polls < 100 {
                     let polled = client.poll_messages(&stream_id, &topic_id, None, &consumer, &PollingStrategy::next(), batch_size, true).await;
@@ -176,17 +178,20 @@ async fn main() -> Result<()> {
                                 if msg.payload.len() >= 8 {
                                     let send_ts = u64::from_le_bytes(msg.payload[0..8].try_into().unwrap());
                                     let latency = receive_ts.saturating_sub(send_ts);
-                                    latency_hist.lock().await.record(latency).ok();
+                                    local_hist.record(latency).ok();
                                 }
                             }
                             total_received.fetch_add(polled.messages.len() as u64, Ordering::Relaxed);
                         }
                         _ => {
                             empty_polls += 1;
-                            sleep(Duration::from_millis(1)).await;
+                            // No sleep - tight poll loop for lowest latency
+                            tokio::task::yield_now().await;
                         }
                     }
                 }
+                // Merge local histogram into global
+                latency_hist.lock().await.add(&local_hist).ok();
                 info!("Consumer {} done", consumer_id);
             }));
         }

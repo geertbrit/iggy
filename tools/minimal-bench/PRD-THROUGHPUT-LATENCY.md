@@ -71,6 +71,8 @@ wait
 - iggy-server: ~970% CPU (10 cores)
 - Disk: 188 writes/s, 752 KB/s on md2
 
+**TODO:** Move iggy data directory to NVMe drives (nvme0n1/nvme1n1 currently idle). Should eliminate iowait bottleneck and potentially 2-5x throughput.
+
 **1c: Multi-Stream Scaling**
 
 | Config | Per-stream | Aggregate |

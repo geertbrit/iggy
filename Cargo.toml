@@ -62,6 +62,7 @@ members = [
     "core/simulator",
     "core/tools",
     "examples/rust",
+    "tools/minimal-bench",
 ]
 exclude = ["foreign/cpp", "foreign/php", "foreign/python"]
 resolver = "2"

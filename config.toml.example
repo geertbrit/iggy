@@ -1,0 +1,39 @@
+# Example Iggy server configuration for benchmarking
+# Copy to config.toml and adjust paths as needed
+
+[system]
+path = "/var/lib/iggy/data"
+
+[system.logging]
+path = "/var/log/iggy"
+level = "warn"
+file_enabled = false
+
+[system.partition]
+messages_required_to_save = 1
+size_of_messages_required_to_save = "512 B"
+enforce_fsync = false
+
+[message_saver]
+enabled = true
+enforce_fsync = false
+interval = "1 s"
+
+[tcp]
+enabled = true
+address = "127.0.0.1:8090"
+
+[tcp.socket]
+override_defaults = true
+nodelay = true
+keepalive = false
+
+[quic]
+enabled = false
+
+[http]
+enabled = true
+address = "127.0.0.1:3000"
+
+[system.sharding]
+cpu_allocation = "all"

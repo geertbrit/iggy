@@ -26,12 +26,13 @@ use crate::{
     benchmark_kind::BenchmarkKind,
     group_metrics::BenchmarkGroupMetrics,
     group_metrics_kind::GroupMetricsKind,
+    individual_metrics::BenchmarkIndividualMetrics,
     report::BenchmarkReport,
     utils::{WIDE_LAYOUT_THRESHOLD, get_terminal_width},
 };
 
 impl BenchmarkReport {
-    pub fn print_summary(&self, pretty: bool) {
+    pub fn print_summary(&self, pretty: bool, verbose: bool) {
         let kind = self.params.benchmark_kind;
         let total_messages = format!("{} messages, ", self.total_messages());
         let total_size = format!(
@@ -77,6 +78,82 @@ impl BenchmarkReport {
         self.group_metrics
             .iter()
             .for_each(|s| println!("\n{}", s.formatted_string(pretty)));
+
+        if verbose {
+            self.print_individual_metrics(pretty);
+        }
+    }
+
+    fn print_individual_metrics(&self, pretty: bool) {
+        let mut producers: Vec<_> = self
+            .individual_metrics
+            .iter()
+            .filter(|m| m.summary.actor_kind == ActorKind::Producer)
+            .collect();
+        let mut consumers: Vec<_> = self
+            .individual_metrics
+            .iter()
+            .filter(|m| m.summary.actor_kind == ActorKind::Consumer)
+            .collect();
+
+        producers.sort_by_key(|m| m.summary.actor_id);
+        consumers.sort_by_key(|m| m.summary.actor_id);
+
+        if !producers.is_empty() {
+            println!("\n{}", "Per-Producer Latency:".green());
+            self.print_actor_table(&producers, pretty);
+        }
+
+        if !consumers.is_empty() {
+            println!("\n{}", "Per-Consumer Latency:".green());
+            self.print_actor_table(&consumers, pretty);
+        }
+    }
+
+    fn print_actor_table(&self, actors: &[&BenchmarkIndividualMetrics], pretty: bool) {
+        if pretty {
+            let mut table = Table::new();
+            table
+                .load_preset(UTF8_FULL)
+                .set_content_arrangement(ContentArrangement::Dynamic);
+
+            table.add_row(vec![
+                "ID", "msgs", "msg/s", "p50 (ms)", "p90 (ms)", "p99 (ms)", "p999 (ms)", "avg (ms)", "max (ms)",
+            ]);
+
+            for actor in actors {
+                let s = &actor.summary;
+                table.add_row(vec![
+                    format!("{}", s.actor_id),
+                    format!("{}", s.total_messages),
+                    format!("{:.0}", s.throughput_messages_per_second),
+                    format!("{:.2}", s.p50_latency_ms),
+                    format!("{:.2}", s.p90_latency_ms),
+                    format!("{:.2}", s.p99_latency_ms),
+                    format!("{:.2}", s.p999_latency_ms),
+                    format!("{:.2}", s.avg_latency_ms),
+                    format!("{:.2}", s.max_latency_ms),
+                ]);
+            }
+            println!("{}", table);
+        } else {
+            for actor in actors {
+                let s = &actor.summary;
+                println!(
+                    "  {} {}: {} msgs, {:.0} msg/s, p50={:.2}ms, p90={:.2}ms, p99={:.2}ms, p999={:.2}ms, avg={:.2}ms, max={:.2}ms",
+                    s.actor_kind,
+                    s.actor_id,
+                    s.total_messages,
+                    s.throughput_messages_per_second,
+                    s.p50_latency_ms,
+                    s.p90_latency_ms,
+                    s.p99_latency_ms,
+                    s.p999_latency_ms,
+                    s.avg_latency_ms,
+                    s.max_latency_ms,
+                );
+            }
+        }
     }
 
     pub fn total_messages(&self) -> u64 {

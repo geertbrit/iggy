@@ -96,6 +96,10 @@ pub struct IggyBenchArgs {
     #[arg(long, default_value_t = false)]
     pub pretty: bool,
 
+    /// Verbose output: show per-actor (producer/consumer) latency breakdown
+    #[arg(long, short = 'v', default_value_t = false)]
+    pub verbose: bool,
+
     /// Reuse existing bench streams instead of deleting and recreating them.
     /// Without this flag, existing bench streams are deleted to ensure
     /// consumers start with fresh data and accurate latency measurements.

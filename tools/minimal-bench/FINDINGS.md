@@ -14,9 +14,73 @@ Our minimal-bench achieves **sub-millisecond end-to-end latency** matching nativ
 - TCP with nodelay enabled
 - 32-core machine
 
+## Critical Discovery: poll-batch-size Eliminates Consumer Overhead
+
+### The Problem with poll-batch-size=1
+
+With `--poll-batch-size=1` (default), each consumer needs a full network round-trip per message. At 1:1 consumer:producer ratio, consumers can't keep up and latency explodes:
+
+| Ratio | poll-batch | Throughput | p50 | p99 | p999 |
+|-------|------------|------------|-----|-----|------|
+| 1:1 | 1 | 33k | **20ms** | **452ms** | 468ms |
+| 1:1 | 10 | 55k | 178us | 295us | 2.2ms |
+| 1:1 | 100 | 54k | 180us | 298us | 7.4ms |
+
+**With `poll-batch-size=10+`, latency drops from 452ms to 295us (1500x improvement)!**
+
+### Why This Works
+
+Iggy uses **drain-available** semantics (not fill-batch):
+- `poll-batch-size` is a maximum, not a minimum
+- Server returns immediately with whatever messages are available (0 to N)
+- No waiting for batch to fill
+
+With larger batch size:
+- One round-trip fetches up to N messages instead of 1
+- Reduces poll overhead dramatically
+- Consumers can keep up with producers at 1:1 ratio
+
+### Updated Recommendation
+
+**You no longer need 3:1 consumer ratio if you use larger poll-batch-size.**
+
+| Config | poll-batch | Throughput | p50 | p99 |
+|--------|------------|------------|-----|-----|
+| P=8 N=8 C=8 R=1 | 1 | 33k | 20ms | 452ms |
+| P=8 N=8 C=8 R=1 | 10 | 55k | 178us | 295us |
+| P=8 N=8 C=8 R=1 | 100 | 54k | 180us | 298us |
+| P=8 N=24 C=24 R=3 | 1 | 41k | 219us | 572us |
+
+**Best practice**: Use `--poll-batch-size=100` with 1:1 ratio instead of 3:1 ratio with batch=1.
+
+## Poll Interval Tradeoff
+
+The `--poll-interval-us` flag adds sleep after empty polls:
+
+| P | N | C | poll=0 | poll=10 | poll=50 |
+|---|---|---|--------|---------|---------|
+| **Throughput** |
+| 1 | 3 | 3 | 13.8k | 14.1k | 14.8k |
+| 8 | 24 | 24 | 49.6k | 58.1k | 56.4k |
+| 16 | 48 | 48 | 49.6k | 60.6k | 61.3k |
+| **p50 latency (us)** |
+| 1 | 3 | 3 | 121 | 517 | 423 |
+| 8 | 24 | 24 | 226 | 548 | 602 |
+| 16 | 48 | 48 | 353 | 676 | 702 |
+
+- `poll-interval-us=0`: Lowest latency but high CPU (70%+ empty polls)
+- `poll-interval-us=10-50`: Higher throughput, moderate latency increase
+
 ## End-to-End Latency Results
 
-### Recommended Config: 3:1 Consumer-to-Producer Ratio
+### Recommended Config: 1:1 with poll-batch-size=100
+
+| P | N | C | R | poll-batch | Throughput | p50 | p99 | p999 |
+|---|---|---|---|------------|------------|-----|-----|------|
+| 8 | 8 | 8 | 1 | 100 | 54k msg/s | 180us | 298us | 7.4ms |
+| 8 | 8 | 8 | 1 | 500 | 58k msg/s | 186us | 288us | 474us |
+
+### Legacy Config: 3:1 with poll-batch-size=1
 
 | P | N | C | R | Throughput | p50 | p99 | p999 |
 |---|---|---|---|------------|-----|-----|------|
@@ -24,7 +88,6 @@ Our minimal-bench achieves **sub-millisecond end-to-end latency** matching nativ
 | 2 | 6 | 6 | 3 | 25k msg/s | 132us | 193us | 3.9ms |
 | 4 | 12 | 12 | 3 | 31k msg/s | 168us | 350us | 6.6ms |
 | 8 | 24 | 24 | 3 | 41k msg/s | 222us | 1.7ms | 16ms |
-| 16 | 48 | 48 | 3 | 48k msg/s | 350us | 1.6ms | 15ms |
 
 ### Comparison: Balanced vs Pinned Partitioning
 
@@ -35,7 +98,7 @@ Both modes achieve similar latency when producers interleave sends:
 | Pinned (partition_id) | 179us | 349us | 7.6ms |
 | Balanced (server routes) | 191us | 644us | 11.7ms |
 
-**Conclusion**: Use pinned for predictable partition assignment, balanced for simplicity. Both work well.
+**Conclusion**: Use pinned for predictable partition assignment, balanced for simplicity.
 
 ## Critical Fix: Interleaved Sends
 
@@ -68,19 +131,20 @@ Result: **p50 = 186us, p99 = 482us**
 
 ## Scaling Limits
 
-### Throughput Ceiling: ~50k msg/s (with consumers)
+### Throughput Ceiling: ~60k msg/s (with consumers)
 
-| Config | Producer | Consumer | Bottleneck |
-|--------|----------|----------|------------|
-| P=16 C=48 | 58k | 58k | Client CPU |
-| P=16 C=0 | **142k** | - | None |
+With optimal settings (`poll-batch-size=100+`):
 
-The ~50k msg/s ceiling is a **benchmark client limitation**, not Iggy:
+| Config | Throughput | Bottleneck |
+|--------|------------|------------|
+| P=8 C=8 batch=100 | 54k | Client CPU |
+| P=8 C=8 batch=500 | 58k | Client CPU |
+| P=16 C=0 | **142k** | None |
+
+The ~60k msg/s ceiling is a **benchmark client limitation**, not Iggy:
 - Server CPU: 11% (barely used)
 - Disk I/O: 2% utilization
 - Client CPU: 600%+ (all cores maxed)
-
-Consumer polling loops in our single-process benchmark eat CPU. In production with distributed clients, Iggy can handle 150k+ msg/s.
 
 ### Producer-Only Peak: 157k msg/s
 
@@ -104,7 +168,7 @@ Consumer polling loops in our single-process benchmark eat CPU. In production wi
 - R ≤ N (can't write to more partitions than exist)
 - P × R ≥ N (every partition gets at least one producer)
 
-**Recommended**: Use R=3 (3:1 consumer-to-producer ratio) for good fault tolerance without latency penalty. Interleaving makes R essentially free from a latency perspective.
+**Recommended**: Use `poll-batch-size=100` with 1:1 ratio (P=N=C, R=1) for simplicity and good performance.
 
 ## Quick Start
 
@@ -126,23 +190,20 @@ cd ~/iggy && cargo build --release -p minimal-bench
 ### Run Benchmarks
 
 ```bash
-# Baseline: 1 producer, 3 partitions, 3 consumers
-~/iggy/target/release/minimal-bench -P 1 -N 3 -C 3 -R 3 -m 100000
+# Recommended: 1:1 ratio with batch fetching
+~/iggy/target/release/minimal-bench -P 8 -N 8 -C 8 -R 1 -m 100000 --poll-batch-size 100
 
-# Scale up: 4 producers, 12 partitions, 12 consumers
-~/iggy/target/release/minimal-bench -P 4 -N 12 -C 12 -R 3 -m 100000
+# With diagnostics
+~/iggy/target/release/minimal-bench -P 8 -N 8 -C 8 -R 1 -m 100000 --poll-batch-size 100 --diagnostics
 
-# With verbose per-actor stats
-~/iggy/target/release/minimal-bench -P 4 -N 16 -C 16 -R 4 -m 100000 -v
+# Legacy 3:1 ratio (for comparison)
+~/iggy/target/release/minimal-bench -P 8 -N 24 -C 24 -R 3 -m 100000
 
 # Producer-only (max throughput test)
 ~/iggy/target/release/minimal-bench -P 24 -N 24 -R 1 -m 500000 --producer-only
 
-# Balanced mode (server routes messages)
-~/iggy/target/release/minimal-bench -P 8 -N 16 -C 16 -R 2 -m 100000 --balanced
-
 # With rate limiting (50k msg/s target)
-~/iggy/target/release/minimal-bench -P 4 -N 12 -C 12 -R 3 -T 50000 -m 100000
+~/iggy/target/release/minimal-bench -P 8 -N 8 -C 8 -R 1 -T 50000 -m 100000 --poll-batch-size 100
 ```
 
 ### CLI Flags
@@ -156,8 +217,34 @@ cd ~/iggy && cargo build --release -p minimal-bench
 | `-m` | Total messages to send |
 | `-T` | Target throughput msg/s (0 = unlimited) |
 | `-v` | Verbose: show per-actor stats |
+| `--poll-batch-size` | Max messages per consumer poll (default: 1) |
+| `--poll-interval-us` | Sleep after empty poll in microseconds (default: 0) |
 | `--producer-only` | Skip consumers |
 | `--balanced` | Use server-side routing instead of pinned partitions |
+| `--diagnostics` | Enable detailed per-partition and per-actor diagnostics |
+| `--diagnostics-json` | Write diagnostics to JSON file |
+
+## Diagnostics
+
+Run with `--diagnostics` to see:
+- Per-partition lag and throughput
+- Consumer poll behavior (polls/s, empty poll ratio, msgs/poll)
+- Producer send behavior (sends/s, duration percentiles)
+- Bottleneck analysis
+
+Example output:
+```
+--- Per-Partition Metrics ---
+Part   Produced   Consumed     Prod/s     Cons/s      Lag   MaxLag
+   0       8334       8334       4012       4012        0       53
+
+--- Consumer Poll Behavior ---
+  ID    Polls/s    Empty/s   Empty%    Dur p50    Dur p99   Msgs/poll
+   0       4884        972    19.9%        90us       131us        1.0
+
+--- Bottleneck Summary ---
+No clear bottleneck detected. System operating within normal parameters.
+```
 
 ## Comparison with Native iggy-bench
 
@@ -167,15 +254,7 @@ cd ~/iggy && cargo build --release -p minimal-bench
 | E2E p99 | 440us | 349us |
 | Throughput (matched P/C) | 48k msg/s | 48k msg/s |
 
-Both benchmarks now produce equivalent results. The native bench uses `-v` flag for per-consumer stats (we added this feature).
-
-```bash
-# Native bench equivalent command
-cd ~/iggy && ./target/release/iggy-bench \
-  -m 350 -P 1 -T 100MB -r 100MB --pretty -v \
-  bpcg --partitions 16 --producers 8 --consumers 16 --consumer-groups 1 \
-  tcp --nodelay
-```
+Both benchmarks now produce equivalent results.
 
 ## Storage Notes
 
@@ -186,3 +265,11 @@ cd ~/iggy && ./target/release/iggy-bench \
 | SATA SSD + ext4 | 157k msg/s | 139us | Baseline |
 
 ZFS write amplification caused 60% throughput loss. Use ext4 for Iggy workloads.
+
+## Key Takeaways
+
+1. **Use `--poll-batch-size=100`** instead of 3:1 consumer ratio
+2. **Iggy uses drain-available semantics** - no fill-batch waiting
+3. **Interleaved sends are critical** for low latency
+4. **poll-interval-us trades latency for CPU** - use 10-50us for balanced workloads
+5. **60k msg/s ceiling is client-side** - server can handle 150k+ with distributed clients

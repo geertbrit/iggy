@@ -47,9 +47,9 @@ struct Args {
     #[arg(short = 'm', long, default_value = "100000")]
     messages: u64,
 
-    /// Messages per send call (producer batching)
+    /// Max messages per consumer poll
     #[arg(long, default_value = "1")]
-    batch_size: u32,
+    poll_batch_size: u32,
 
     /// Message payload size in bytes
     #[arg(long, default_value = "250")]
@@ -298,7 +298,7 @@ async fn main() -> Result<()> {
             let producer_done = producer_done.clone();
             let total_received = total_received.clone();
             let global_hist = global_consumer_hist.clone();
-            let batch_size = args.batch_size;
+            let batch_size = args.poll_batch_size;
             let poll_interval_us = args.poll_interval_us;
             let partition_trackers = partition_trackers.clone();
             let enable_diag = enable_diagnostics;
@@ -669,7 +669,7 @@ async fn main() -> Result<()> {
             redundancy: args.redundancy,
             messages: args.messages,
             message_size: args.message_size,
-            batch_size: args.batch_size,
+            poll_batch_size: args.poll_batch_size,
             poll_interval_us: args.poll_interval_us,
             balanced: args.balanced,
             producer_only: args.producer_only,

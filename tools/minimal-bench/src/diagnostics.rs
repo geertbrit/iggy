@@ -322,7 +322,7 @@ pub struct BenchmarkConfig {
     pub redundancy: u32,
     pub messages: u64,
     pub message_size: usize,
-    pub batch_size: u32,
+    pub poll_batch_size: u32,
     pub poll_interval_us: u64,
     pub balanced: bool,
     pub producer_only: bool,
@@ -548,21 +548,10 @@ impl DiagnosticReport {
 
     fn analyze_send_efficiency(
         producer_sends: &[ProducerSendSnapshot],
-        config: &BenchmarkConfig,
+        _config: &BenchmarkConfig,
         observations: &mut Vec<DiagnosticObservation>,
     ) {
         for send in producer_sends {
-            if config.batch_size > 1 && send.messages_per_send_avg < 1.5 {
-                observations.push(DiagnosticObservation {
-                    category: "batching".to_string(),
-                    severity: Severity::Info,
-                    message: format!(
-                        "Producer {} batch_size={} but avg msgs/send={:.1}. Batching not utilized.",
-                        send.producer_id, config.batch_size, send.messages_per_send_avg
-                    ),
-                });
-            }
-
             if send.send_duration_p99_us > 5_000 {
                 observations.push(DiagnosticObservation {
                     category: "send".to_string(),

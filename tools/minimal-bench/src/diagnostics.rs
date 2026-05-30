@@ -183,6 +183,7 @@ impl ConsumerPollStats {
             },
             poll_duration_p50_us: self.poll_duration_hist.value_at_quantile(0.50),
             poll_duration_p99_us: self.poll_duration_hist.value_at_quantile(0.99),
+            poll_duration_p999_us: self.poll_duration_hist.value_at_quantile(0.999),
             messages_per_poll_avg: if self.poll_count > self.empty_poll_count {
                 self.total_messages as f64 / (self.poll_count - self.empty_poll_count) as f64
             } else {
@@ -190,8 +191,10 @@ impl ConsumerPollStats {
             },
             messages_per_poll_p50: self.messages_per_poll_hist.value_at_quantile(0.50),
             messages_per_poll_p99: self.messages_per_poll_hist.value_at_quantile(0.99),
+            messages_per_poll_p999: self.messages_per_poll_hist.value_at_quantile(0.999),
             time_between_polls_p50_us: self.time_between_polls_hist.value_at_quantile(0.50),
             time_between_polls_p99_us: self.time_between_polls_hist.value_at_quantile(0.99),
+            time_between_polls_p999_us: self.time_between_polls_hist.value_at_quantile(0.999),
         }
     }
 }
@@ -204,11 +207,14 @@ pub struct ConsumerPollSnapshot {
     pub empty_poll_ratio: f64,
     pub poll_duration_p50_us: u64,
     pub poll_duration_p99_us: u64,
+    pub poll_duration_p999_us: u64,
     pub messages_per_poll_avg: f64,
     pub messages_per_poll_p50: u64,
     pub messages_per_poll_p99: u64,
+    pub messages_per_poll_p999: u64,
     pub time_between_polls_p50_us: u64,
     pub time_between_polls_p99_us: u64,
+    pub time_between_polls_p999_us: u64,
 }
 
 /// Producer send behavior tracking (thread-local)
@@ -251,6 +257,7 @@ impl ProducerSendStats {
             },
             send_duration_p50_us: self.send_duration_hist.value_at_quantile(0.50),
             send_duration_p99_us: self.send_duration_hist.value_at_quantile(0.99),
+            send_duration_p999_us: self.send_duration_hist.value_at_quantile(0.999),
             messages_per_send_avg: if self.send_count > 0 {
                 self.total_messages as f64 / self.send_count as f64
             } else {
@@ -272,6 +279,7 @@ pub struct ProducerSendSnapshot {
     pub sends_per_sec: f64,
     pub send_duration_p50_us: u64,
     pub send_duration_p99_us: u64,
+    pub send_duration_p999_us: u64,
     pub messages_per_send_avg: f64,
     pub messages_per_send_p50: u64,
     pub bytes_per_send_avg: f64,
@@ -633,18 +641,19 @@ impl DiagnosticReport {
         if !self.consumer_polls.is_empty() {
             warn!("--- Consumer Poll Behavior ---");
             warn!(
-                "{:>4} {:>10} {:>10} {:>8} {:>10} {:>10} {:>10}",
-                "ID", "Polls/s", "Empty/s", "Empty%", "Dur p50", "Dur p99", "Msgs/poll"
+                "{:>4} {:>10} {:>10} {:>8} {:>10} {:>10} {:>10} {:>10}",
+                "ID", "Polls/s", "Empty/s", "Empty%", "Dur p50", "Dur p99", "Dur p999", "Msgs/poll"
             );
             for c in &self.consumer_polls {
                 warn!(
-                    "{:>4} {:>10.0} {:>10.0} {:>7.1}% {:>9}us {:>9}us {:>10.1}",
+                    "{:>4} {:>10.0} {:>10.0} {:>7.1}% {:>9}us {:>9}us {:>9}us {:>10.1}",
                     c.consumer_id,
                     c.polls_per_sec,
                     c.empty_polls_per_sec,
                     c.empty_poll_ratio * 100.0,
                     c.poll_duration_p50_us,
                     c.poll_duration_p99_us,
+                    c.poll_duration_p999_us,
                     c.messages_per_poll_avg
                 );
             }
@@ -655,16 +664,17 @@ impl DiagnosticReport {
         if !self.producer_sends.is_empty() {
             warn!("--- Producer Send Behavior ---");
             warn!(
-                "{:>4} {:>10} {:>10} {:>10} {:>12}",
-                "ID", "Sends/s", "Dur p50", "Dur p99", "Msgs/send"
+                "{:>4} {:>10} {:>10} {:>10} {:>10} {:>12}",
+                "ID", "Sends/s", "Dur p50", "Dur p99", "Dur p999", "Msgs/send"
             );
             for p in &self.producer_sends {
                 warn!(
-                    "{:>4} {:>10.0} {:>9}us {:>9}us {:>12.1}",
+                    "{:>4} {:>10.0} {:>9}us {:>9}us {:>9}us {:>12.1}",
                     p.producer_id,
                     p.sends_per_sec,
                     p.send_duration_p50_us,
                     p.send_duration_p99_us,
+                    p.send_duration_p999_us,
                     p.messages_per_send_avg
                 );
             }

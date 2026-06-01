@@ -106,6 +106,10 @@ struct Args {
     /// Output diagnostics JSON to file
     #[arg(long)]
     diagnostics_json: Option<PathBuf>,
+
+    /// Disable auto-commit, manually commit offset after each batch
+    #[arg(long)]
+    manual_commit: bool,
 }
 
 /// Per-actor stats returned from producer/consumer tasks
@@ -303,6 +307,9 @@ async fn main() -> Result<()> {
             let partition_trackers = partition_trackers.clone();
             let enable_diag = enable_diagnostics;
             let message_size = args.message_size;
+            let manual_commit = args.manual_commit;
+            let stream_id_clone = stream_id.clone();
+            let topic_id_clone = topic_id.clone();
 
             consumer_handles.push(tokio::spawn(async move {
                 let consumer = Consumer::group(group_id);
@@ -315,6 +322,7 @@ async fn main() -> Result<()> {
 
                 while !producer_done.load(Ordering::Relaxed) || empty_polls < 100 {
                     let poll_start = Instant::now();
+                    let auto_commit = !manual_commit;
                     let polled = client
                         .poll_messages(
                             &stream_id,
@@ -323,7 +331,7 @@ async fn main() -> Result<()> {
                             &consumer,
                             &PollingStrategy::next(),
                             batch_size,
-                            true,
+                            auto_commit,
                         )
                         .await;
                     let poll_duration_us = poll_start.elapsed().as_micros() as u64;
@@ -369,6 +377,20 @@ async fn main() -> Result<()> {
                             }
                             messages_received += msg_count;
                             total_received.fetch_add(msg_count, Ordering::Relaxed);
+
+                            if manual_commit {
+                                let last_offset = polled.messages.last().unwrap().header.offset;
+                                client
+                                    .store_consumer_offset(
+                                        &consumer,
+                                        &stream_id_clone,
+                                        &topic_id_clone,
+                                        Some(partition_id),
+                                        last_offset,
+                                    )
+                                    .await
+                                    .ok();
+                            }
                         }
                         _ => {
                             empty_polls += 1;

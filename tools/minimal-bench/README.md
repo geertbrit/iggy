@@ -140,6 +140,61 @@ msg/s. The bench client is the ceiling.
 - Rate limiting producers — worsens p50/p99 without improving p999.
 - `TOKIO_WORKER_THREADS` tuning — no measurable effect.
 
+## Porting to other hardware
+
+### Storage
+
+`config.toml` defaults to `/mnt/iggy-tmpfs`. Update `system.path` to match your setup:
+
+```toml
+[system]
+path = "/mnt/iggy-tmpfs"       # tmpfs — lowest latency, data lost on reboot
+# path = "/mnt/iggy-nvme"      # NVMe — persistent, still very fast with fsync=off
+# path = "/your/path"          # anything else
+```
+
+On NVMe + ext4 with `enforce_fsync = false`, expect similar throughput with slightly
+higher p999 variance depending on drive. ZFS on NVMe is notably worse (write
+amplification causes 60%+ throughput loss — use ext4).
+
+### CPU topology
+
+`config.toml` pins server shards to cores 0-7 (`cpu_allocation = "0..8"`). The
+`taskset` ranges in the launch commands are also EPYC-specific. Adjust both to match
+your machine's CCD layout.
+
+To find your CCD boundaries:
+
+```bash
+for cpu in $(seq 0 $(nproc --all | awk '{print $1-1}')); do
+  l3=$(cat /sys/devices/system/cpu/cpu${cpu}/cache/index3/id 2>/dev/null)
+  echo "cpu${cpu} L3=${l3}"
+done
+```
+
+Then update:
+
+1. `config.toml` — set `cpu_allocation` to the core range you want the server on,
+   e.g. `"0..8"` for an 8-core CCD or `"0..16"` for 16 cores across two CCDs.
+2. Server launch — `taskset -c 0-7` should match the `cpu_allocation` range.
+3. Bench launch — `taskset -c 8-23` should be the next available CCD(s), not
+   overlapping with the server.
+
+Example for a Ryzen 5950X (2 CCDs of 8 physical cores + 8 HT siblings each):
+
+```bash
+# Server on CCD0 physical cores (0-7), bench on CCD1 physical cores (8-15)
+cpu_allocation = "0..8"
+taskset -c 0-7  ./target/release/iggy-server ...
+taskset -c 8-15 ./target/release/minimal-bench ...
+```
+
+### The one setting that matters most
+
+Regardless of hardware, `messages_required_to_save = 500` in `[system.partition]`
+is the key to sub-2ms p999. The default value causes periodic large write bursts
+that spike tail latency. See the findings section above.
+
 ## CLI flags
 
 | Flag | Description |

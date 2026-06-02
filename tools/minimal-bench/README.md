@@ -2,15 +2,15 @@
 
 Minimal benchmark for Iggy throughput and latency testing.
 
-## Environment
+## Environments
 
-AWS c8a.8xlarge (eu-west-1), AMD EPYC 9R45, 32 cores, 64 GB RAM.
+### AWS EPYC (c8a.8xlarge)
+
+AMD EPYC 9R45, 32 cores, 64 GB RAM.
 CPU topology: 4 L3 domains (CCDs) of 8 cores — L3[0]=0-7, L3[1]=8-15, L3[2]=16-23, L3[3]=24-31.
 Storage: 16 GB tmpfs at `/mnt/iggy-tmpfs`.
 
-## Results
-
-~125k msg/s, p999 consistently under 1.1ms. Validated across 8 runs with 1M messages each:
+**Results:** ~125k msg/s, p999 consistently under 1.1ms. Validated across 8 runs with 1M messages each:
 
 | Run | Throughput | p50 | p99 | p999 |
 |-----|-----------|-----|-----|------|
@@ -24,6 +24,49 @@ Storage: 16 GB tmpfs at `/mnt/iggy-tmpfs`.
 | 8 | 124k msg/s | 495µs | 998µs | 1047µs |
 
 The max outlier (~11ms) is the KVM hypervisor preempting a vCPU — not tunable in software.
+
+### Bare metal Ryzen 5950X (Hetzner)
+
+AMD Ryzen 9 5950X, 16 cores / 32 threads, 64 GB RAM.
+CPU topology: 2 L3 domains (CCDs) — L3[0]=0-7,16-23 (physical+SMT), L3[1]=8-15,24-31.
+Storage: NVMe SSD (ext4, `enforce_fsync = false`).
+
+**Results:** ~75-82k msg/s, p999 ~1.1-1.2ms. Validated across 10 runs with 1M messages each:
+
+| Run | Throughput | p50 | p99 | p999 | max |
+|-----|-----------|-----|-----|------|-----|
+| 1 | 81k msg/s | 393µs | 1009µs | 1166µs | 21ms |
+| 2 | 82k msg/s | 401µs | 1015µs | 1180µs | 50ms |
+| 3 | 83k msg/s | 401µs | 1014µs | 1170µs | 12ms |
+| 4 | 80k msg/s | 419µs | 1029µs | 1241µs | 89ms |
+| 5 | 82k msg/s | 370µs | 1015µs | 1165µs | 12ms |
+| 6 | 78k msg/s | 332µs | 1030µs | 1187µs | 68ms |
+| 7 | 80k msg/s | 386µs | 1018µs | 1179µs | 29ms |
+| 8 | 82k msg/s | 375µs | 1016µs | 1173µs | 42ms |
+| 9 | 77k msg/s | 356µs | 1015µs | 1186µs | 12ms |
+| 10 | 78k msg/s | 381µs | 1013µs | 1327µs | 52ms |
+
+Max outliers (12-89ms) are Linux scheduler noise — bare metal has no hypervisor, but
+the kernel can still preempt. Kernel params `isolcpus`, `nohz_full`, `rcu_nocbs` and
+RT scheduling (`chrt -f 50`) did not significantly reduce these outliers.
+
+**OS tuning applied:**
+
+```bash
+# CPU governor (persistent via /etc/default/cpufrequtils)
+echo 'GOVERNOR="performance"' | sudo tee /etc/default/cpufrequtils
+
+# Kernel params (add to GRUB_CMDLINE_LINUX_DEFAULT, then update-grub + reboot)
+isolcpus=0-7 nohz_full=0-7 rcu_nocbs=0-7
+
+# memlock (add to /etc/security/limits.conf)
+* soft memlock unlimited
+* hard memlock unlimited
+```
+
+The `performance` governor improved throughput ~10% (72-80k to 82-87k msg/s) and
+tightened p999 variance. The kernel isolation params had negligible effect on this
+workload.
 
 ## Prerequisites
 
@@ -135,8 +178,13 @@ msg/s. The bench client is the ceiling.
 
 ### what does not help
 
-- RT scheduling (`chrt -f 50`) — no effect. The ~11ms max is the KVM hypervisor;
-  SCHED_FIFO cannot prevent hypervisor preemption.
+- RT scheduling (`chrt -f 50`) — no effect on AWS (KVM hypervisor preemption) or
+  bare metal (kernel interrupts). SCHED_FIFO cannot prevent either.
+- `enforce_fsync = true` — counter-intuitively makes p999 worse, not flatter.
+  Tested on NVMe: throughput dropped 45% (75k to 44k msg/s), p999 spiked to 20ms+.
+  Per-message fsync (`messages_required_to_save = 1`) is impractically slow (~3k msg/s).
+- Kernel isolation (`isolcpus`, `nohz_full`, `rcu_nocbs`) — negligible effect on
+  bare metal Ryzen. The max outliers persist.
 - Rate limiting producers — worsens p50/p99 without improving p999.
 - `TOKIO_WORKER_THREADS` tuning — no measurable effect.
 
@@ -183,10 +231,18 @@ Then update:
 Example for a Ryzen 5950X (2 CCDs of 8 physical cores + 8 HT siblings each):
 
 ```bash
-# Server on CCD0 physical cores (0-7), bench on CCD1 physical cores (8-15)
+# config.toml
 cpu_allocation = "0..8"
-taskset -c 0-7  ./target/release/iggy-server ...
-taskset -c 8-15 ./target/release/minimal-bench ...
+
+# Server on CCD0 physical cores (0-7)
+taskset -c 0-7 env IGGY_CONFIG_PATH=~/iggy/config.toml \
+  ./target/release/iggy-server --with-default-root-credentials \
+  > /tmp/iggy-server.log 2>&1 &
+
+# Bench on CCD1 physical cores (8-15)
+taskset -c 8-15 ./target/release/minimal-bench \
+  -P 4 -N 8 -C 8 -R 2 -m 1000000 \
+  --poll-batch-size 500 --poll-interval-us 1
 ```
 
 ### The one setting that matters most

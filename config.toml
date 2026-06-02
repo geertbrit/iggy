@@ -141,7 +141,7 @@ transport = "grpc"
 endpoint = "http://localhost:7281/v1/traces"
 
 [system]
-path = "/mnt/iggy-tmpfs"
+path = "data/iggy"
 
 [system.backup]
 path = "backup"

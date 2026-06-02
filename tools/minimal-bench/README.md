@@ -2,114 +2,221 @@
 
 Minimal benchmark for Iggy throughput and latency testing.
 
-## Quick Start
+## Environment
+
+AWS c8a.8xlarge (eu-west-1), AMD EPYC 9R45, 32 cores, 64 GB RAM.
+CPU topology: 4 L3 domains (CCDs) of 8 cores — L3[0]=0-7, L3[1]=8-15, L3[2]=16-23, L3[3]=24-31.
+Storage: 16 GB tmpfs at `/mnt/iggy-tmpfs`.
+
+## Results
+
+~125k msg/s, p999 consistently under 1.1ms. Validated across 8 runs with 1M messages each:
+
+| Run | Throughput | p50 | p99 | p999 |
+|-----|-----------|-----|-----|------|
+| 1 | 124k msg/s | 485µs | 995µs | 1033µs |
+| 2 | 127k msg/s | 501µs | 997µs | 1035µs |
+| 3 | 125k msg/s | 474µs | 995µs | 1040µs |
+| 4 | 125k msg/s | 492µs | 996µs | 1059µs |
+| 5 | 125k msg/s | 487µs | 997µs | 1042µs |
+| 6 | 127k msg/s | 473µs | 993µs | 1057µs |
+| 7 | 123k msg/s | 480µs | 997µs | 1101µs |
+| 8 | 124k msg/s | 495µs | 998µs | 1047µs |
+
+The max outlier (~11ms) is the KVM hypervisor preempting a vCPU — not tunable in software.
+
+## Prerequisites
 
 ```bash
-# 1. Start the server (from repo root)
-ulimit -n 1048576 && IGGY_CONFIG_PATH=config.toml ./target/release/iggy-server --with-default-root-credentials
+# memlock limit for io_uring with many shards
+echo "* soft memlock unlimited" | sudo tee -a /etc/security/limits.conf
+echo "* hard memlock unlimited" | sudo tee -a /etc/security/limits.conf
 
-# 2. Run the benchmark
-./target/release/minimal-bench -P 8 -N 8 -C 8 -R 1 -m 100000 --poll-batch-size 100 --poll-interval-us 10
+# tmpfs mount (add to /etc/fstab for persistence)
+sudo mkdir -p /mnt/iggy-tmpfs
+sudo mount -t tmpfs -o size=16g tmpfs /mnt/iggy-tmpfs
 ```
 
-## Server Setup
-
-The benchmark uses hardcoded credentials `iggy`/`iggy`. Start the server with:
+## Build
 
 ```bash
-ulimit -n 1048576 && IGGY_CONFIG_PATH=config.toml ./target/release/iggy-server --with-default-root-credentials
+cd ~/iggy
+source ~/.cargo/env
+cargo build --release --bin iggy-server --bin minimal-bench
 ```
 
-- `ulimit -n 1048576` - raises file descriptor limit (avoids "too many open files" errors)
-- `IGGY_CONFIG_PATH=config.toml` - low-latency config at repo root (see below)
-- `--with-default-root-credentials` - creates user `iggy` with password `iggy`
+## Server config
 
-Without `--with-default-root-credentials`, the server generates a random password and the benchmark fails with `invalid_credentials`.
+`config.toml` at the repo root. Key settings vs defaults:
 
-### Low-Latency Config
+| Setting | Default | Bench value | Why |
+|---------|---------|-------------|-----|
+| `system.path` | `local_data` | `/mnt/iggy-tmpfs` | tmpfs = zero I/O latency |
+| `system.partition.messages_required_to_save` | 1024 | **500** | prevents periodic flush stall |
+| `system.partition.size_of_messages_required_to_save` | 1 MiB | **256 KiB** | caps flush burst size |
+| `system.segment.cache_indexes` | `open_segment` | `all` | keeps indexes hot |
+| `message_saver.enforce_fsync` | `true` | `false` | no durability needed |
+| `system.partition.enforce_fsync` | `false` | `false` | unchanged |
+| `system.state.enforce_fsync` | `false` | `false` | unchanged |
+| `tcp.socket.nodelay` | `false` | `true` | disable Nagle |
+| `tcp.socket.{recv,send}_buffer_size` | 100 KB | 256 KB | larger socket buffers |
+| `system.sharding.cpu_allocation` | `all` | `"0..8"` | pin shards to L3[0] |
+| `quic.enabled` | `true` | `false` | reduce overhead |
+| `websocket.enabled` | `true` | `false` | reduce overhead |
+| `system.logging.level` | `info` | `warn` | less noise |
+| `system.logging.file_enabled` | `true` | `false` | no log files |
 
-The repo includes `config.toml` at the root, tuned for benchmarking:
-
-- TCP nodelay enabled, larger socket buffers (256KB)
-- fsync disabled (state, partition, message_saver)
-- Higher batch thresholds before disk write (10k msgs / 10MB)
-- Index caching = all
-- QUIC/WebSocket disabled
-- Logging = warn, no file output
-- Data path = `data/iggy`
-
-For production, re-enable fsync and adjust paths as needed.
-
-## Common Options
+## Start server
 
 ```bash
--m, --messages <N>          Total messages to send (default: 100000)
--P, --producers <N>         Number of producers (default: 1)
--N, --partitions <N>        Number of partitions (default: 1)
--R, --redundancy <N>        Partitions per producer (default: 1)
--C, --consumers <N>         Number of consumers (default: 1)
---poll-interval-us <N>      Microseconds between polls on empty (default: 0 = tight loop)
---poll-batch-size <N>       Max messages per poll (default: 1)
---producer-only             Skip consumers, measure producer throughput only
---manual-commit             Disable auto-commit, manually commit offset after each batch
---diagnostics               Show detailed stats (lag, poll behavior, etc.)
--v, --verbose               Per-producer and per-consumer stats
+# Clear data (fresh run)
+sudo rm -rf /mnt/iggy-tmpfs/*
+
+# Start pinned to L3[0] (cores 0-7)
+taskset -c 0-7 env IGGY_CONFIG_PATH=~/iggy/config.toml \
+  ./target/release/iggy-server --with-default-root-credentials \
+  > /tmp/iggy-server.log 2>&1 &
 ```
 
-## Multi-Process Testing
-
-For multi-process tests, use different `--stream` names:
+## Run benchmark
 
 ```bash
-# Terminal 1
-./target/release/minimal-bench -m 100000 -P 1 -N 32 -R 32 -C 32 --stream s1
-
-# Terminal 2
-./target/release/minimal-bench -m 100000 -P 1 -N 32 -R 32 -C 32 --stream s2
-
-# Terminal 3
-./target/release/minimal-bench -m 100000 -P 1 -N 32 -R 32 -C 32 --stream s3
+taskset -c 8-23 ./target/release/minimal-bench \
+  -P 4 -N 8 -C 8 -R 2 -m 1000000 \
+  --poll-batch-size 500 --poll-interval-us 1
 ```
 
-## Reducing CPU Burn on Consumers
+## Key findings
 
-If consumers are CPU-bound from empty polls, use `--poll-interval-us`:
+### flush threshold is the p999 lever
 
-```bash
-./target/release/minimal-bench --poll-interval-us 50  # 50us delay on empty poll
+`messages_required_to_save` is the single most impactful setting. Large values cause
+periodic multi-MB write bursts that stall io_uring shards — consumers poll into the
+stall, messages accumulate, p999 spikes. Smaller flushes also improve throughput by
+removing backpressure on producers.
+
+| `messages_required_to_save` | p999 | Throughput |
+|-----------------------------|------|-----------|
+| 10000 | ~8.7ms | ~48k msg/s |
+| 1024 (default) | ~5ms | ~80k msg/s |
+| **500** | **~1.05ms** | **~125k msg/s** |
+
+### CPU pinning
+
+Pinning the server and bench to separate CCDs prevents them competing for cores.
+Without separation the bench lands on the server's cores and p999 degrades to 1–11ms.
+
+| Config | Throughput | p999 |
+|--------|-----------|------|
+| Both unpinned | ~220k msg/s | 1–6ms (noisy) |
+| Server pinned 0-7, bench free | ~215k msg/s | 1–11ms (worst) |
+| **Server 0-7, bench 8-23** | **~125k msg/s** | **~1.05ms (stable)** |
+
+Pinning costs ~35% throughput — the bench tokio runtime is restricted to 16 cores
+instead of 32. Worth it if p999 stability matters.
+
+### poll-batch-size and poll-interval-us
+
+Use `--poll-batch-size 500` and `--poll-interval-us 1`.
+
+Iggy uses drain-available semantics: the server returns immediately with whatever
+messages are available (never waits to fill the batch). A large batch size removes
+the need to round-trip per message during catch-up. In steady state, msgs/poll is
+typically 2-5 regardless of batch size setting.
+
+Tight loop (`--poll-interval-us 0`) burns all consumer CPU on empty polls, starves
+the tokio runtime, and degrades both throughput and latency (p999 ~18ms, throughput
+drops to 29k msg/s).
+
+### server is not the bottleneck
+
+At 125k msg/s, server shards run at < 5% CPU each. Producer-only runs reach ~220k
+msg/s. The bench client is the ceiling.
+
+### what does not help
+
+- RT scheduling (`chrt -f 50`) — no effect. The ~11ms max is the KVM hypervisor;
+  SCHED_FIFO cannot prevent hypervisor preemption.
+- Rate limiting producers — worsens p50/p99 without improving p999.
+- `TOKIO_WORKER_THREADS` tuning — no measurable effect.
+
+## Porting to other hardware
+
+### Storage
+
+`config.toml` defaults to `/mnt/iggy-tmpfs`. Update `system.path` to match your setup:
+
+```toml
+[system]
+path = "/mnt/iggy-tmpfs"       # tmpfs — lowest latency, data lost on reboot
+# path = "/mnt/iggy-nvme"      # NVMe — persistent, still very fast with fsync=off
+# path = "/your/path"          # anything else
 ```
 
-## Findings
+On NVMe + ext4 with `enforce_fsync = false`, expect similar throughput with slightly
+higher p999 variance depending on drive. ZFS on NVMe is notably worse (write
+amplification causes 60%+ throughput loss — use ext4).
 
-### poll-batch-size
+### CPU topology
 
-The `--poll-batch-size` parameter has "up to N" semantics - the server returns up to N messages per poll. Setting this to 100 eliminates ~500x latency overhead vs batch=1:
+`config.toml` pins server shards to cores 0-7 (`cpu_allocation = "0..8"`). The
+`taskset` ranges in the launch commands are also EPYC-specific. Adjust both to match
+your machine's CCD layout.
 
-| poll-batch-size | Latency p50 | Throughput |
-|-----------------|-------------|------------|
-| 1               | ~100ms      | ~1k msg/s  |
-| 10-100          | ~200µs      | ~60k msg/s |
-
-For any serious benchmarking, use `--poll-batch-size 100` or higher.
-
-### CPU Pinning (AMD Ryzen 5950X)
-
-Tested CCD affinity (server + bench on same L3 cache) vs cross-CCD (different L3 caches):
-
-| Config | Producer Throughput | Latency avg |
-|--------|---------------------|-------------|
-| No pinning (baseline) | 54,977 msg/s | 239 µs |
-| CCD-Affinity (same CCD) | 60,725 msg/s | 232 µs |
-| CCD-Cross (diff CCD) | 49,907 msg/s | 451 µs |
-
-**Conclusion:** CCD-affinity wins but the delta is modest (~10% throughput improvement). Cross-CCD is noticeably worse due to inter-CCD latency. For this workload, CPU pinning provides marginal gains. However, other servers or workloads may show larger deltas, so CPU pinning should be part of any serious optimization effort.
-
-To pin server and benchmark to same CCD:
+To find your CCD boundaries:
 
 ```bash
-# Server on cores 0-7 (CCD0)
-taskset -c 0-7 ./target/release/iggy-server --with-default-root-credentials
+for cpu in $(seq 0 $(nproc --all | awk '{print $1-1}')); do
+  l3=$(cat /sys/devices/system/cpu/cpu${cpu}/cache/index3/id 2>/dev/null)
+  echo "cpu${cpu} L3=${l3}"
+done
+```
 
-# Benchmark on same cores
-taskset -c 0-7 ./target/release/minimal-bench -P 8 -N 8 -C 8 -R 1 -m 100000 --poll-batch-size 100
+Then update:
+
+1. `config.toml` — set `cpu_allocation` to the core range you want the server on,
+   e.g. `"0..8"` for an 8-core CCD or `"0..16"` for 16 cores across two CCDs.
+2. Server launch — `taskset -c 0-7` should match the `cpu_allocation` range.
+3. Bench launch — `taskset -c 8-23` should be the next available CCD(s), not
+   overlapping with the server.
+
+Example for a Ryzen 5950X (2 CCDs of 8 physical cores + 8 HT siblings each):
+
+```bash
+# Server on CCD0 physical cores (0-7), bench on CCD1 physical cores (8-15)
+cpu_allocation = "0..8"
+taskset -c 0-7  ./target/release/iggy-server ...
+taskset -c 8-15 ./target/release/minimal-bench ...
+```
+
+### The one setting that matters most
+
+Regardless of hardware, `messages_required_to_save = 500` in `[system.partition]`
+is the key to sub-2ms p999. The default value causes periodic large write bursts
+that spike tail latency. See the findings section above.
+
+## CLI flags
+
+| Flag | Description |
+|------|-------------|
+| `-P` | Number of producers |
+| `-N` | Number of partitions |
+| `-C` | Number of consumers |
+| `-R` | Redundancy — partitions per producer |
+| `-m` | Total messages to send |
+| `-T` | Target throughput msg/s (0 = unlimited) |
+| `--poll-batch-size` | Max messages per consumer poll |
+| `--poll-interval-us` | Sleep after empty poll in µs |
+| `--producer-only` | Skip consumers, measure send throughput only |
+| `--balanced` | Server-side routing instead of pinned partitions |
+| `--diagnostics` | Per-partition lag, poll behavior, bottleneck summary |
+| `--diagnostics-json` | Write diagnostics to JSON file |
+| `-v` | Per-actor verbose stats |
+| `--stream` | Stream name (use distinct names for multi-process runs) |
+
+## Multi-process testing
+
+```bash
+taskset -c 8-15  ./target/release/minimal-bench -P 4 -N 8 -C 8 -R 2 -m 1000000 --poll-batch-size 500 --poll-interval-us 1 --stream s1 &
+taskset -c 16-23 ./target/release/minimal-bench -P 4 -N 8 -C 8 -R 2 -m 1000000 --poll-batch-size 500 --poll-interval-us 1 --stream s2 &
 ```

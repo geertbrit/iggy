@@ -1,0 +1,239 @@
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+#
+#   http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+# Benchmark-tuned config for minimal-bench.
+# Data lives on a tmpfs mount for maximum I/O speed.
+
+[consumer_group]
+rebalancing_timeout = "30s"
+rebalancing_check_interval = "5s"
+
+[data_maintenance.messages]
+cleaner_enabled = false
+interval = "1 m"
+
+[http]
+enabled = true
+address = "127.0.0.1:3000"
+max_request_size = "2 MB"
+web_ui = false
+
+[http.cors]
+enabled = true
+allowed_methods = ["GET", "POST", "PUT", "DELETE"]
+allowed_origins = ["*"]
+allowed_headers = ["content-type", "authorization"]
+exposed_headers = [""]
+allow_credentials = false
+allow_private_network = false
+
+[http.jwt]
+algorithm = "HS256"
+issuer = "iggy.apache.org"
+audience = "iggy.apache.org"
+valid_issuers = ["iggy.apache.org"]
+valid_audiences = ["iggy.apache.org"]
+access_token_expiry = "1 h"
+clock_skew = "5 s"
+not_before = "0 s"
+encoding_secret = ""
+decoding_secret = ""
+use_base64_secret = false
+
+[[http.jwt.trusted_issuers]]
+issuer = "test-issuer"
+jwks_url = "http://127.0.0.1:8081/.well-known/jwks.json"
+audience = "iggy.apache.org"
+
+[http.metrics]
+enabled = true
+endpoint = "/metrics"
+
+[http.tls]
+enabled = false
+cert_file = "core/certs/iggy_cert.pem"
+key_file = "core/certs/iggy_key.pem"
+
+[tcp]
+enabled = true
+address = "127.0.0.1:8090"
+socket_migration = true
+ipv6 = false
+
+[tcp.tls]
+enabled = false
+self_signed = true
+cert_file = "core/certs/iggy_cert.pem"
+key_file = "core/certs/iggy_key.pem"
+
+[tcp.socket]
+override_defaults = true
+recv_buffer_size = "256 KB"
+send_buffer_size = "256 KB"
+keepalive = false
+nodelay = true
+linger = "0 s"
+
+# QUIC disabled for benchmarking — reduces overhead
+[quic]
+enabled = false
+address = "127.0.0.1:8080"
+max_concurrent_bidi_streams = 10_000
+datagram_send_buffer_size = "100 KB"
+initial_mtu = "8 KB"
+send_window = "100 KB"
+receive_window = "100 KB"
+keep_alive_interval = "5 s"
+max_idle_timeout = "10 s"
+
+[quic.certificate]
+self_signed = true
+cert_file = "core/certs/iggy_cert.pem"
+key_file = "core/certs/iggy_key.pem"
+
+[quic.socket]
+override_defaults = false
+recv_buffer_size = "64 KB"
+send_buffer_size = "64 KB"
+keepalive = false
+
+# fsync disabled for maximum throughput
+[message_saver]
+enabled = true
+enforce_fsync = false
+interval = "30 s"
+
+[personal_access_token]
+max_tokens_per_user = 100
+
+[personal_access_token.cleaner]
+enabled = true
+interval = "1 m"
+
+[heartbeat]
+enabled = false
+interval = "5 s"
+
+[telemetry]
+enabled = false
+service_name = "iggy"
+
+[telemetry.logs]
+transport = "grpc"
+endpoint = "http://localhost:7281/v1/logs"
+
+[telemetry.traces]
+transport = "grpc"
+endpoint = "http://localhost:7281/v1/traces"
+
+[system]
+path = "/mnt/iggy-tmpfs"
+
+[system.backup]
+path = "backup"
+
+[system.backup.compatibility]
+path = "compatibility"
+
+[system.state]
+enforce_fsync = false
+max_file_operation_retries = 1
+retry_delay = "1 s"
+
+[system.runtime]
+path = "runtime"
+
+[system.logging]
+path = "logs"
+level = "warn"
+file_enabled = false
+max_file_size = "500 MB"
+max_total_size = "4 GB"
+rotation_check_interval = "1 h"
+retention = "7 days"
+sysinfo_print_interval = "10 s"
+
+[system.encryption]
+enabled = false
+key = ""
+
+[system.compression]
+allow_override = false
+default_algorithm = "none"
+
+[system.stream]
+path = "streams"
+
+[system.topic]
+path = "topics"
+max_size = "unlimited"
+message_expiry = "none"
+
+[system.partition]
+path = "partitions"
+enforce_fsync = false
+validate_checksum = false
+messages_required_to_save = 500
+size_of_messages_required_to_save = "256 KiB"
+
+[system.segment]
+size = "1 GiB"
+archive_expired = false
+cache_indexes = "all"
+
+[system.message_deduplication]
+enabled = false
+max_entries = 10000
+expiry = "1 m"
+
+[system.recovery]
+recreate_missing_state = false
+
+[system.memory_pool]
+enabled = true
+size = "4 GiB"
+bucket_capacity = 8192
+
+[cluster]
+enabled = false
+name = "iggy-cluster"
+
+[[cluster.nodes]]
+name = "iggy-node-1"
+ip = "127.0.0.1"
+replica_id = 0
+ports = { tcp = 8090, quic = 8080, http = 3000, websocket = 8070, tcp_replica = 9090 }
+
+[[cluster.nodes]]
+name = "iggy-node-2"
+ip = "127.0.0.1"
+replica_id = 1
+ports = { tcp = 8091, quic = 8081, http = 3001, websocket = 8093, tcp_replica = 9091 }
+
+[system.sharding]
+cpu_allocation = "0..8"
+
+# WebSocket disabled for benchmarking — reduces overhead
+[websocket]
+enabled = false
+address = "127.0.0.1:8092"
+
+[websocket.tls]
+enabled = false
+self_signed = true
+cert_file = "core/certs/iggy_cert.pem"
+key_file = "core/certs/iggy_key.pem"
